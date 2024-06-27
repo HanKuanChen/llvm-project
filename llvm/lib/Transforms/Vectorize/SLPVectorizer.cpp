@@ -9478,8 +9478,12 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
   // that the costs will be accurate.
   auto It = MinBWs.find(E);
   Type *OrigScalarTy = ScalarTy;
-  if (It != MinBWs.end())
+  if (It != MinBWs.end()) {
+    auto VecTy = dyn_cast<FixedVectorType>(ScalarTy);
     ScalarTy = IntegerType::get(F->getContext(), It->second.first);
+    if (VecTy)
+      ScalarTy = getWidenedType(ScalarTy, VecTy->getNumElements());
+  }
   auto *VecTy = getWidenedType(ScalarTy, VL.size());
   unsigned EntryVF = E->getVectorFactor();
   auto *FinalVecTy = getWidenedType(ScalarTy, EntryVF);
@@ -13030,8 +13034,12 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E, bool PostponedPHIs) {
   else if (auto *IE = dyn_cast<InsertElementInst>(V))
     ScalarTy = IE->getOperand(1)->getType();
   auto It = MinBWs.find(E);
-  if (It != MinBWs.end())
+  if (It != MinBWs.end()) {
+    auto VecTy = dyn_cast<FixedVectorType>(ScalarTy);
     ScalarTy = IntegerType::get(F->getContext(), It->second.first);
+    if (VecTy)
+      ScalarTy = getWidenedType(ScalarTy, VecTy->getNumElements());
+  }
   auto *VecTy = getWidenedType(ScalarTy, E->Scalars.size());
   if (E->isGather()) {
     // Set insert point for non-reduction initial nodes.
