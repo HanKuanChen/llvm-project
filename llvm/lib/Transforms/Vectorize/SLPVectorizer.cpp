@@ -9467,7 +9467,8 @@ static SmallVector<Type *> buildIntrinsicArgTypes(const CallInst *CI,
       }
       if (MinBW > 0) {
         ArgTys.push_back(
-            getWidenedType(IntegerType::get(CI->getContext(), MinBW), VF));
+            getWidenedType(IntegerType::get(CI->getContext(), MinBW),
+                           VF * getNumElements(Arg->getType())));
         continue;
       }
     }
@@ -15592,7 +15593,8 @@ bool BoUpSLP::collectValuesToDemote(
       if (UniqueBases.size() <= 2 ||
           TTI->getNumberOfParts(getWidenedType(OrigScalarTy, VF)) ==
               TTI->getNumberOfParts(getWidenedType(
-                  IntegerType::get(OrigScalarTy->getContext(), BitWidth), VF)))
+                  IntegerType::get(OrigScalarTy->getContext(), BitWidth),
+                  VF * getNumElements(OrigScalarTy))))
         ToDemote.push_back(E.Idx);
     }
     return Res;
@@ -15850,7 +15852,9 @@ bool BoUpSLP::collectValuesToDemote(
       unsigned MinBW = PowerOf2Ceil(BitWidth);
       SmallVector<Type *> ArgTys = buildIntrinsicArgTypes(IC, ID, VF, MinBW);
       auto VecCallCosts = getVectorCallCosts(
-          IC, getWidenedType(IntegerType::get(IC->getContext(), MinBW), VF),
+          IC,
+          getWidenedType(IntegerType::get(IC->getContext(), MinBW),
+                         VF * getNumElements(IC->getType())),
           TTI, TLI, ArgTys);
       InstructionCost Cost = std::min(VecCallCosts.first, VecCallCosts.second);
       if (Cost < BestCost) {
@@ -16024,10 +16028,10 @@ void BoUpSLP::computeMinimumValueSizes() {
 
     // If the original type is large, but reduced type does not improve the reg
     // use - ignore it.
-    if (NumParts > 1 &&
-        NumParts ==
-            TTI->getNumberOfParts(getWidenedType(
-                IntegerType::get(F->getContext(), bit_ceil(MaxBitWidth)), VF)))
+    if (NumParts > 1 && NumParts == TTI->getNumberOfParts(getWidenedType(
+                                        IntegerType::get(F->getContext(),
+                                                         bit_ceil(MaxBitWidth)),
+                                        VF * ScalarTyNumElements)))
       return 0u;
 
     bool IsProfitableToDemote = Opcode == Instruction::Trunc ||
@@ -16049,7 +16053,8 @@ void BoUpSLP::computeMinimumValueSizes() {
              DL->getTypeSizeInBits(TreeRootIT) /
                      DL->getTypeSizeInBits(cast<Instruction>(E.Scalars.front())
                                                ->getOperand(0)
-                                               ->getType()) >
+                                               ->getType()
+                                               ->getScalarType()) >
                  2)))))
       return 0u;
     // Round MaxBitWidth up to the next power-of-two.
@@ -16062,11 +16067,13 @@ void BoUpSLP::computeMinimumValueSizes() {
   // be demoted as a result. That is, those seeded by truncations we will
   // modify.
   // Add reduction ops sizes, if any.
-  if (UserIgnoreList &&
-      isa<IntegerType>(VectorizableTree.front()->Scalars.front()->getType())) {
+  if (UserIgnoreList && isa<IntegerType>(VectorizableTree.front()
+                                             ->Scalars.front()
+                                             ->getType()
+                                             ->getScalarType())) {
     for (Value *V : *UserIgnoreList) {
       auto NumSignBits = ComputeNumSignBits(V, *DL, 0, AC, nullptr, DT);
-      auto NumTypeBits = DL->getTypeSizeInBits(V->getType());
+      auto NumTypeBits = DL->getTypeSizeInBits(V->getType()->getScalarType());
       unsigned BitWidth1 = NumTypeBits - NumSignBits;
       if (!isKnownNonNegative(V, SimplifyQuery(*DL)))
         ++BitWidth1;
@@ -16097,9 +16104,10 @@ void BoUpSLP::computeMinimumValueSizes() {
     unsigned Limit = 2;
     unsigned Opcode = VectorizableTree[NodeIdx]->getOpcode();
     if (IsTopRoot &&
-        ReductionBitWidth ==
-            DL->getTypeSizeInBits(
-                VectorizableTree.front()->Scalars.front()->getType()))
+        ReductionBitWidth == DL->getTypeSizeInBits(VectorizableTree.front()
+                                                       ->Scalars.front()
+                                                       ->getType()
+                                                       ->getScalarType()))
       Limit = 3;
     unsigned MaxBitWidth = ComputeMaxBitWidth(
         *VectorizableTree[NodeIdx], IsTopRoot, IsProfitableToDemoteRoot, Opcode,
