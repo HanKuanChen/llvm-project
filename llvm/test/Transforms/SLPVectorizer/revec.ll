@@ -199,3 +199,15 @@ entry:
   %cmp = icmp ugt <4 x i32> %vbsl, <i32 2, i32 3, i32 4, i32 5>
   ret <4 x i1> %cmp
 }
+
+define void @test8() {
+entry:
+  %__position.coerce.fca.0.extract = extractvalue [2 x i64] zeroinitializer, 0
+  %0 = inttoptr i64 %__position.coerce.fca.0.extract to ptr
+  %add.i = add i64 1, 0
+  %cmp7.i = icmp ult i64 %add.i, 0
+  %1 = tail call i64 @llvm.umin.i64(i64 %add.i, i64 0)
+  %sub.ptr.sub.i.i.i.i.i.i86 = or i64 %__position.coerce.fca.0.extract, 0
+  %cmp.i.i.i.i.i.i = icmp sgt i64 %sub.ptr.sub.i.i.i.i.i.i86, 0
+  ret void
+}
