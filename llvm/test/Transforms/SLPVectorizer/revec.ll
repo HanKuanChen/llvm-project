@@ -201,6 +201,29 @@ entry:
 }
 
 define void @test8() {
+; CHECK-LABEL: @test8(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[__POSITION_COERCE_FCA_0_EXTRACT:%.*]] = extractvalue [2 x i64] zeroinitializer, 0
+; CHECK-NEXT:    [[TMP0:%.*]] = inttoptr i64 [[__POSITION_COERCE_FCA_0_EXTRACT]] to ptr
+; CHECK-NEXT:    [[TMP1:%.*]] = insertelement <2 x i64> <i64 0, i64 poison>, i64 [[__POSITION_COERCE_FCA_0_EXTRACT]], i32 1
+; CHECK-NEXT:    [[TMP2:%.*]] = add <2 x i64> <i64 1, i64 0>, [[TMP1]]
+; CHECK-NEXT:    [[TMP3:%.*]] = or <2 x i64> <i64 1, i64 0>, [[TMP1]]
+; CHECK-NEXT:    [[TMP4:%.*]] = shufflevector <2 x i64> [[TMP2]], <2 x i64> [[TMP3]], <2 x i32> <i32 0, i32 3>
+; CHECK-NEXT:    [[TMP5:%.*]] = extractelement <2 x i64> [[TMP4]], i32 0
+; CHECK-NEXT:    [[TMP6:%.*]] = tail call i64 @llvm.umin.i64(i64 [[TMP5]], i64 0)
+; CHECK-NEXT:    [[TMP7:%.*]] = call <4 x i64> @llvm.vector.insert.v4i64.v2i64(<4 x i64> poison, <2 x i64> poison, i64 2)
+; CHECK-NEXT:    [[TMP8:%.*]] = call <4 x i64> @llvm.vector.insert.v4i64.v2i64(<4 x i64> [[TMP7]], <2 x i64> [[TMP4]], i64 0)
+; CHECK-NEXT:    [[TMP9:%.*]] = shufflevector <4 x i64> [[TMP8]], <4 x i64> poison, <4 x i32> <i32 0, i32 1, i32 0, i32 1>
+; CHECK-NEXT:    [[TMP10:%.*]] = call <4 x i64> @llvm.vector.insert.v4i64.v2i64(<4 x i64> poison, <2 x i64> zeroinitializer, i64 0)
+; CHECK-NEXT:    [[TMP11:%.*]] = call <4 x i64> @llvm.vector.insert.v4i64.v2i64(<4 x i64> [[TMP10]], <2 x i64> zeroinitializer, i64 2)
+; CHECK-NEXT:    [[TMP12:%.*]] = icmp ult <4 x i64> [[TMP9]], [[TMP11]]
+; CHECK-NEXT:    [[TMP13:%.*]] = icmp sgt <4 x i64> [[TMP9]], [[TMP11]]
+; CHECK-NEXT:    [[TMP14:%.*]] = shufflevector <4 x i1> [[TMP12]], <4 x i1> [[TMP13]], <4 x i32> <i32 0, i32 1, i32 6, i32 7>
+; CHECK-NEXT:    [[TMP15:%.*]] = call <2 x i1> @llvm.vector.extract.v2i1.v4i1(<4 x i1> [[TMP14]], i64 0)
+; CHECK-NEXT:    [[TMP16:%.*]] = call <2 x i1> @llvm.vector.extract.v2i1.v4i1(<4 x i1> [[TMP14]], i64 2)
+; CHECK-NEXT:    [[TMP17:%.*]] = shufflevector <2 x i1> [[TMP15]], <2 x i1> [[TMP16]], <2 x i32> <i32 0, i32 3>
+; CHECK-NEXT:    ret void
+;
 entry:
   %__position.coerce.fca.0.extract = extractvalue [2 x i64] zeroinitializer, 0
   %0 = inttoptr i64 %__position.coerce.fca.0.extract to ptr

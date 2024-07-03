@@ -14262,10 +14262,10 @@ Value *BoUpSLP::vectorizeTree(
         return ExV;
       }
       assert(isa<FixedVectorType>(Scalar->getType()) &&
-             isa<InsertElementInst>(Scalar) &&
+             (isa<InsertElementInst>(Scalar) || SLPReVec) &&
              "In-tree scalar of vector type is not insertelement?");
-      auto *IE = cast<InsertElementInst>(Scalar);
-      VectorToInsertElement.try_emplace(Vec, IE);
+      if (auto *IE = dyn_cast<InsertElementInst>(Scalar))
+        VectorToInsertElement.try_emplace(Vec, IE);
       return Vec;
     };
     // If User == nullptr, the Scalar remains as scalar in vectorized
