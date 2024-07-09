@@ -4692,8 +4692,12 @@ BoUpSLP::LoadsState BoUpSLP::canVectorizeLoads(
     return LoadsState::Gather;
   }
 
+  // If ScalarTy is a FixedVectorType (when REVEC is enabled), it is hard for
+  // being strided load.
+  bool IsSourceScalarInstruction = !isa<FixedVectorType>(VL[0]->getType());
   Align CommonAlignment = computeCommonAlignment<LoadInst>(VL);
-  if (!IsSorted && Sz > MinProfitableStridedLoads && TTI->isTypeLegal(VecTy) &&
+  if (IsSourceScalarInstruction && !IsSorted &&
+      Sz > MinProfitableStridedLoads && TTI->isTypeLegal(VecTy) &&
       TTI->isLegalStridedLoadStore(VecTy, CommonAlignment) &&
       calculateRtStride(PointerOps, ScalarTy, *DL, *SE, Order))
     return LoadsState::StridedVectorize;
@@ -4716,7 +4720,8 @@ BoUpSLP::LoadsState BoUpSLP::canVectorizeLoads(
       if (static_cast<unsigned>(*Diff) == Sz - 1)
         return LoadsState::Vectorize;
       // Simple check if not a strided access - clear order.
-      bool IsPossibleStrided = *Diff % (Sz - 1) == 0;
+      bool IsPossibleStrided =
+          IsSourceScalarInstruction && (*Diff % (Sz - 1) == 0);
       // Try to generate strided load node if:
       // 1. Target with strided load support is detected.
       // 2. The number of loads is greater than MinProfitableStridedLoads,
@@ -8349,6 +8354,8 @@ void BoUpSLP::transformNodes() {
       if (E.State != TreeEntry::Vectorize)
         break;
       Type *ScalarTy = E.getMainOp()->getType();
+      if (isa<FixedVectorType>(ScalarTy))
+        break;
       auto *VecTy = getWidenedType(ScalarTy, E.Scalars.size());
       Align CommonAlignment = computeCommonAlignment<LoadInst>(E.Scalars);
       // Check if profitable to represent consecutive load + reverse as strided
@@ -8376,6 +8383,8 @@ void BoUpSLP::transformNodes() {
     case Instruction::Store: {
       Type *ScalarTy =
           cast<StoreInst>(E.getMainOp())->getValueOperand()->getType();
+      if (isa<FixedVectorType>(ScalarTy))
+        break;
       auto *VecTy = getWidenedType(ScalarTy, E.Scalars.size());
       Align CommonAlignment = computeCommonAlignment<StoreInst>(E.Scalars);
       // Check if profitable to represent consecutive load + reverse as strided
