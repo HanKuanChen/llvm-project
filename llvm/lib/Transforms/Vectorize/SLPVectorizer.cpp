@@ -15447,6 +15447,10 @@ unsigned BoUpSLP::getVectorElementSize(Value *V) {
   if (auto *IEI = dyn_cast<InsertElementInst>(V))
     return getVectorElementSize(IEI->getOperand(1));
 
+  if (auto *II = dyn_cast<IntrinsicInst>(V))
+    if (SLPReVec && II->getIntrinsicID() == Intrinsic::vector_insert)
+      return getVectorElementSize(II->getArgOperand(1));
+
   auto E = InstrElementSize.find(V);
   if (E != InstrElementSize.end())
     return E->second;
@@ -15472,16 +15476,18 @@ unsigned BoUpSLP::getVectorElementSize(Value *V) {
     // We should only be looking at scalar instructions here. If the current
     // instruction has a vector type, skip.
     auto *Ty = I->getType();
-    if (isa<VectorType>(Ty))
+    if (!SLPReVec && isa<VectorType>(Ty))
       continue;
-    if (Ty != Builder.getInt1Ty() && !FirstNonBool)
+    if (Ty->getScalarType() != Builder.getInt1Ty() && !FirstNonBool)
       FirstNonBool = I;
     if (Level > RecursionMaxDepth)
       continue;
 
+    auto *II = dyn_cast<IntrinsicInst>(I);
     // If the current instruction is a load, update MaxWidth to reflect the
     // width of the loaded value.
-    if (isa<LoadInst, ExtractElementInst, ExtractValueInst>(I))
+    if (isa<LoadInst, ExtractElementInst, ExtractValueInst>(I) ||
+        (SLPReVec && II && II->getIntrinsicID() == Intrinsic::vector_extract))
       Width = std::max<unsigned>(Width, DL->getTypeSizeInBits(Ty));
 
     // Otherwise, we need to visit the operands of the instruction. We only
@@ -15497,7 +15503,8 @@ unsigned BoUpSLP::getVectorElementSize(Value *V) {
             Worklist.emplace_back(J, J->getParent(), Level + 1);
             continue;
           }
-        if (!FirstNonBool && U.get()->getType() != Builder.getInt1Ty())
+        if (!FirstNonBool &&
+            U.get()->getType()->getScalarType() != Builder.getInt1Ty())
           FirstNonBool = U.get();
       }
     } else {
@@ -15509,7 +15516,7 @@ unsigned BoUpSLP::getVectorElementSize(Value *V) {
   // gave up for some reason, just return the width of V. Otherwise, return the
   // maximum width we found.
   if (!Width) {
-    if (V->getType() == Builder.getInt1Ty() && FirstNonBool)
+    if (V->getType()->getScalarType() == Builder.getInt1Ty() && FirstNonBool)
       V = FirstNonBool;
     Width = DL->getTypeSizeInBits(V->getType());
   }
