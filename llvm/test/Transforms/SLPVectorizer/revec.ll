@@ -234,3 +234,20 @@ entry:
   %cmp.i.i.i.i.i.i = icmp sgt i64 %sub.ptr.sub.i.i.i.i.i.i86, 0
   ret void
 }
+
+define void @test9() {
+entry:
+  br i1 false, label %for.cond.cleanup.loopexit.unr-lcssa, label %for.body
+
+for.cond.cleanup.loopexit.unr-lcssa:              ; preds = %for.body, %entry
+  %0 = phi <2 x float> [ zeroinitializer, %entry ], [ %4, %for.body ]
+  %1 = phi <2 x float> [ zeroinitializer, %entry ], [ %5, %for.body ]
+  %2 = phi <2 x float> [ zeroinitializer, %entry ], [ %4, %for.body ]
+  %3 = phi <2 x float> [ zeroinitializer, %entry ], [ %5, %for.body ]
+  ret void
+
+for.body:                                         ; preds = %for.body, %entry
+  %4 = phi <2 x float> [ %4, %for.body ], [ zeroinitializer, %entry ]
+  %5 = phi <2 x float> [ %5, %for.body ], [ zeroinitializer, %entry ]
+  br i1 false, label %for.cond.cleanup.loopexit.unr-lcssa, label %for.body
+}
