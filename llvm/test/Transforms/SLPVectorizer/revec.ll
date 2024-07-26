@@ -268,3 +268,12 @@ for.body:                                         ; preds = %for.body, %entry
   %5 = phi <2 x float> [ %5, %for.body ], [ zeroinitializer, %entry ]
   br i1 false, label %for.cond.cleanup.loopexit.unr-lcssa, label %for.body
 }
+
+define void @test10() {
+  %1 = getelementptr i8, ptr null, i64 16
+  %2 = trunc <8 x i64> zeroinitializer to <8 x i16>
+  store <8 x i16> %2, ptr %1, align 2
+  %3 = trunc <8 x i64> zeroinitializer to <8 x i16>
+  store <8 x i16> %3, ptr null, align 2
+  ret void
+}
