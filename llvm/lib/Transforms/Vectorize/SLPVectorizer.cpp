@@ -15496,7 +15496,8 @@ bool BoUpSLP::collectValuesToDemote(
   if (all_of(E.Scalars, IsaPred<Constant>))
     return true;
 
-  unsigned OrigBitWidth = DL->getTypeSizeInBits(E.Scalars.front()->getType());
+  unsigned OrigBitWidth =
+      DL->getTypeSizeInBits(E.Scalars.front()->getType()->getScalarType());
   if (OrigBitWidth == BitWidth) {
     MaxDepthLevel = 1;
     return true;
@@ -15580,7 +15581,8 @@ bool BoUpSLP::collectValuesToDemote(
                  (UserIgnoreList && UserIgnoreList->contains(U)) ||
                  (!isa<CmpInst>(U) && U->getType()->isSized() &&
                   !U->getType()->isScalableTy() &&
-                  DL->getTypeSizeInBits(U->getType()) <= BitWidth);
+                  DL->getTypeSizeInBits(U->getType()->getScalarType()) <=
+                      BitWidth);
         }) && !IsPotentiallyTruncated(V, BitWidth);
       }))
     return false;
@@ -15927,7 +15929,9 @@ void BoUpSLP::computeMinimumValueSizes() {
     }
 
     unsigned VF = E.getVectorFactor();
-    auto *TreeRootIT = dyn_cast<IntegerType>(E.Scalars.front()->getType());
+    Type *ScalarTy = E.Scalars.front()->getType();
+    unsigned ScalarTyNumElements = getNumElements(ScalarTy);
+    auto *TreeRootIT = dyn_cast<IntegerType>(ScalarTy->getScalarType());
     if (!TreeRootIT || !Opcode)
       return 0u;
 
@@ -15935,7 +15939,8 @@ void BoUpSLP::computeMinimumValueSizes() {
                [&](Value *V) { return AnalyzedMinBWVals.contains(V); }))
       return 0u;
 
-    unsigned NumParts = TTI->getNumberOfParts(getWidenedType(TreeRootIT, VF));
+    unsigned NumParts = TTI->getNumberOfParts(
+        getWidenedType(TreeRootIT, VF * ScalarTyNumElements));
 
     // The maximum bit width required to represent all the values that can be
     // demoted without loss of precision. It would be safe to truncate the roots
@@ -15957,7 +15962,8 @@ void BoUpSLP::computeMinimumValueSizes() {
     // we can truncate the roots to this narrower type.
     for (Value *Root : E.Scalars) {
       unsigned NumSignBits = ComputeNumSignBits(Root, *DL, 0, AC, nullptr, DT);
-      TypeSize NumTypeBits = DL->getTypeSizeInBits(Root->getType());
+      TypeSize NumTypeBits =
+          DL->getTypeSizeInBits(Root->getType()->getScalarType());
       unsigned BitWidth1 = NumTypeBits - NumSignBits;
       // If we can't prove that the sign bit is zero, we must add one to the
       // maximum bit width to account for the unknown sign bit. This preserves
@@ -16077,7 +16083,8 @@ void BoUpSLP::computeMinimumValueSizes() {
 
     for (unsigned Idx : RootDemotes) {
       if (all_of(VectorizableTree[Idx]->Scalars, [&](Value *V) {
-            uint32_t OrigBitWidth = DL->getTypeSizeInBits(V->getType());
+            uint32_t OrigBitWidth =
+                DL->getTypeSizeInBits(V->getType()->getScalarType());
             if (OrigBitWidth > MaxBitWidth) {
               APInt Mask = APInt::getBitsSetFrom(OrigBitWidth, MaxBitWidth);
               return MaskedValueIsZero(V, Mask, SimplifyQuery(*DL));
@@ -16128,7 +16135,8 @@ void BoUpSLP::computeMinimumValueSizes() {
     // type, we can proceed with the narrowing. Otherwise, do nothing.
     if (MaxBitWidth == 0 ||
         MaxBitWidth >=
-            cast<IntegerType>(TreeRoot.front()->getType())->getBitWidth()) {
+            cast<IntegerType>(TreeRoot.front()->getType()->getScalarType())
+                ->getBitWidth()) {
       if (UserIgnoreList)
         AnalyzedMinBWVals.insert(TreeRoot.begin(), TreeRoot.end());
       continue;
