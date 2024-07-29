@@ -284,3 +284,16 @@ define void @test10() {
   store <8 x i16> %3, ptr null, align 2
   ret void
 }
+
+define void @test11() {
+entry:
+  br label %for.body13
+
+for.body13:                                       ; preds = %for.body13, %entry
+  %vmovl.i111 = sext <4 x i16> zeroinitializer to <4 x i32>
+  %vmovl.i110 = sext <4 x i16> zeroinitializer to <4 x i32>
+  store <4 x i32> %vmovl.i111, ptr null, align 4
+  %add.ptr29 = getelementptr i8, ptr null, i64 16
+  store <4 x i32> %vmovl.i110, ptr %add.ptr29, align 4
+  br label %for.body13
+}
