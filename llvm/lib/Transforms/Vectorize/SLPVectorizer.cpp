@@ -15671,7 +15671,8 @@ bool BoUpSLP::collectValuesToDemote(
                  (UserIgnoreList && UserIgnoreList->contains(U)) ||
                  (!isa<CmpInst>(U) && U->getType()->isSized() &&
                   !U->getType()->isScalableTy() &&
-                  DL->getTypeSizeInBits(U->getType()) <= BitWidth);
+                  DL->getTypeSizeInBits(U->getType()->getScalarType()) <=
+                      BitWidth);
         }) && !IsPotentiallyTruncated(V, BitWidth);
       }))
     return false;
@@ -15997,11 +15998,12 @@ void BoUpSLP::computeMinimumValueSizes() {
                     if (TE == UserTE || !TE)
                       return false;
                     unsigned UserTESz = DL->getTypeSizeInBits(
-                        UserTE->Scalars.front()->getType());
+                        UserTE->Scalars.front()->getType()->getScalarType());
                     auto It = MinBWs.find(TE);
                     if (It != MinBWs.end() && It->second.first > UserTESz)
                       return true;
-                    return DL->getTypeSizeInBits(U->getType()) > UserTESz;
+                    return DL->getTypeSizeInBits(
+                               U->getType()->getScalarType()) > UserTESz;
                   }));
         })) {
       ToDemote.push_back(E.Idx);
@@ -16009,8 +16011,8 @@ void BoUpSLP::computeMinimumValueSizes() {
       auto It = MinBWs.find(UserTE);
       if (It != MinBWs.end())
         return It->second.first;
-      unsigned MaxBitWidth =
-          DL->getTypeSizeInBits(UserTE->Scalars.front()->getType());
+      unsigned MaxBitWidth = DL->getTypeSizeInBits(
+          UserTE->Scalars.front()->getType()->getScalarType());
       MaxBitWidth = bit_ceil(MaxBitWidth);
       if (MaxBitWidth < 8 && MaxBitWidth > 1)
         MaxBitWidth = 8;
@@ -16083,10 +16085,10 @@ void BoUpSLP::computeMinimumValueSizes() {
 
     // If the original type is large, but reduced type does not improve the reg
     // use - ignore it.
-    if (NumParts > 1 &&
-        NumParts ==
-            TTI->getNumberOfParts(getWidenedType(
-                IntegerType::get(F->getContext(), bit_ceil(MaxBitWidth)), VF)))
+    if (NumParts > 1 && NumParts == TTI->getNumberOfParts(getWidenedType(
+                                        IntegerType::get(F->getContext(),
+                                                         bit_ceil(MaxBitWidth)),
+                                        VF * ScalarTyNumElements)))
       return 0u;
 
     bool IsProfitableToDemote = Opcode == Instruction::Trunc ||
@@ -16108,7 +16110,8 @@ void BoUpSLP::computeMinimumValueSizes() {
              DL->getTypeSizeInBits(TreeRootIT) /
                      DL->getTypeSizeInBits(cast<Instruction>(E.Scalars.front())
                                                ->getOperand(0)
-                                               ->getType()) >
+                                               ->getType()
+                                               ->getScalarType()) >
                  2)))))
       return 0u;
     // Round MaxBitWidth up to the next power-of-two.
@@ -16121,11 +16124,13 @@ void BoUpSLP::computeMinimumValueSizes() {
   // be demoted as a result. That is, those seeded by truncations we will
   // modify.
   // Add reduction ops sizes, if any.
-  if (UserIgnoreList &&
-      isa<IntegerType>(VectorizableTree.front()->Scalars.front()->getType())) {
+  if (UserIgnoreList && isa<IntegerType>(VectorizableTree.front()
+                                             ->Scalars.front()
+                                             ->getType()
+                                             ->getScalarType())) {
     for (Value *V : *UserIgnoreList) {
       auto NumSignBits = ComputeNumSignBits(V, *DL, 0, AC, nullptr, DT);
-      auto NumTypeBits = DL->getTypeSizeInBits(V->getType());
+      auto NumTypeBits = DL->getTypeSizeInBits(V->getType()->getScalarType());
       unsigned BitWidth1 = NumTypeBits - NumSignBits;
       if (!isKnownNonNegative(V, SimplifyQuery(*DL)))
         ++BitWidth1;
@@ -16156,9 +16161,10 @@ void BoUpSLP::computeMinimumValueSizes() {
     unsigned Limit = 2;
     unsigned Opcode = VectorizableTree[NodeIdx]->getOpcode();
     if (IsTopRoot &&
-        ReductionBitWidth ==
-            DL->getTypeSizeInBits(
-                VectorizableTree.front()->Scalars.front()->getType()))
+        ReductionBitWidth == DL->getTypeSizeInBits(VectorizableTree.front()
+                                                       ->Scalars.front()
+                                                       ->getType()
+                                                       ->getScalarType()))
       Limit = 3;
     unsigned MaxBitWidth = ComputeMaxBitWidth(
         *VectorizableTree[NodeIdx], IsTopRoot, IsProfitableToDemoteRoot, Opcode,
