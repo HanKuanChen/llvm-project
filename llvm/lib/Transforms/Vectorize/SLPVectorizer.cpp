@@ -9938,25 +9938,28 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
         match(VL0, MatchCmp))
       SwappedVecPred = CmpInst::getSwappedPredicate(VecPred);
     else
-      SwappedVecPred = VecPred = ScalarTy->isFloatingPointTy()
+      SwappedVecPred = VecPred = ScalarTy->isFPOrFPVectorTy()
                                      ? CmpInst::BAD_FCMP_PREDICATE
                                      : CmpInst::BAD_ICMP_PREDICATE;
     auto GetScalarCost = [&](unsigned Idx) {
       auto *VI = cast<Instruction>(UniqueValues[Idx]);
-      CmpInst::Predicate CurrentPred = ScalarTy->isFloatingPointTy()
+      CmpInst::Predicate CurrentPred = ScalarTy->isFPOrFPVectorTy()
                                            ? CmpInst::BAD_FCMP_PREDICATE
                                            : CmpInst::BAD_ICMP_PREDICATE;
       auto MatchCmp = m_Cmp(CurrentPred, m_Value(), m_Value());
       if ((!match(VI, m_Select(MatchCmp, m_Value(), m_Value())) &&
            !match(VI, MatchCmp)) ||
           (CurrentPred != VecPred && CurrentPred != SwappedVecPred))
-        VecPred = SwappedVecPred = ScalarTy->isFloatingPointTy()
+        VecPred = SwappedVecPred = ScalarTy->isFPOrFPVectorTy()
                                        ? CmpInst::BAD_FCMP_PREDICATE
                                        : CmpInst::BAD_ICMP_PREDICATE;
-
+      Type *CondTy;
+      if (auto *VecTy = dyn_cast<FixedVectorType>(ScalarTy))
+        CondTy = getWidenedType(Builder.getInt1Ty(), VecTy->getNumElements());
+      else
+        CondTy = Builder.getInt1Ty();
       InstructionCost ScalarCost = TTI->getCmpSelInstrCost(
-          E->getOpcode(), OrigScalarTy, Builder.getInt1Ty(), CurrentPred,
-          CostKind, VI);
+          E->getOpcode(), OrigScalarTy, CondTy, CurrentPred, CostKind, VI);
       InstructionCost IntrinsicCost = GetMinMaxCost(OrigScalarTy, VI);
       if (IntrinsicCost.isValid())
         ScalarCost = IntrinsicCost;
@@ -9964,7 +9967,8 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
       return ScalarCost;
     };
     auto GetVectorCost = [&](InstructionCost CommonCost) {
-      auto *MaskTy = getWidenedType(Builder.getInt1Ty(), VL.size());
+      unsigned VecTyNumElements = getNumElements(VecTy);
+      auto *MaskTy = getWidenedType(Builder.getInt1Ty(), VecTyNumElements);
 
       InstructionCost VecCost = TTI->getCmpSelInstrCost(
           E->getOpcode(), VecTy, MaskTy, VecPred, CostKind, VL0);
@@ -9972,7 +9976,6 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
         auto *CondType =
             getWidenedType(SI->getCondition()->getType(), VL.size());
         unsigned CondNumElements = CondType->getNumElements();
-        unsigned VecTyNumElements = getNumElements(VecTy);
         assert(VecTyNumElements >= CondNumElements &&
                VecTyNumElements % CondNumElements == 0 &&
                "Cannot vectorize Instruction::Select");
