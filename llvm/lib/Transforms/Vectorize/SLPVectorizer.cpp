@@ -10148,9 +10148,8 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
     auto GetVectorCost = [=](InstructionCost CommonCost) {
       auto *CI = cast<CallInst>(VL0);
       Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
-      SmallVector<Type *> ArgTys =
-          buildIntrinsicArgTypes(CI, ID, VecTy->getNumElements(),
-                                 It != MinBWs.end() ? It->second.first : 0);
+      SmallVector<Type *> ArgTys = buildIntrinsicArgTypes(
+          CI, ID, VL.size(), It != MinBWs.end() ? It->second.first : 0);
       auto VecCallCosts = getVectorCallCosts(CI, VecTy, TTI, TLI, ArgTys);
       return std::min(VecCallCosts.first, VecCallCosts.second) + CommonCost;
     };
@@ -13863,9 +13862,8 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E, bool PostponedPHIs) {
 
       Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
 
-      SmallVector<Type *> ArgTys =
-          buildIntrinsicArgTypes(CI, ID, VecTy->getNumElements(),
-                                 It != MinBWs.end() ? It->second.first : 0);
+      SmallVector<Type *> ArgTys = buildIntrinsicArgTypes(
+          CI, ID, E->Scalars.size(), It != MinBWs.end() ? It->second.first : 0);
       auto VecCallCosts = getVectorCallCosts(CI, VecTy, TTI, TLI, ArgTys);
       bool UseIntrinsic = ID != Intrinsic::not_intrinsic &&
                           VecCallCosts.first <= VecCallCosts.second;
