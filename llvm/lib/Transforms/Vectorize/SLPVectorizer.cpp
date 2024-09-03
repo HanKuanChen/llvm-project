@@ -9422,8 +9422,9 @@ static SmallVector<Type *> buildIntrinsicArgTypes(const CallInst *CI,
         continue;
       }
       if (MinBW > 0) {
-        ArgTys.push_back(
-            getWidenedType(IntegerType::get(CI->getContext(), MinBW), VF));
+        unsigned NumElements = getNumElements(Arg->getType());
+        ArgTys.push_back(getWidenedType(
+            IntegerType::get(CI->getContext(), MinBW), VF * NumElements));
         continue;
       }
     }
@@ -10070,9 +10071,8 @@ BoUpSLP::getEntryCost(const TreeEntry *E, ArrayRef<Value *> VectorizedVals,
     auto GetVectorCost = [=](InstructionCost CommonCost) {
       auto *CI = cast<CallInst>(VL0);
       Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
-      SmallVector<Type *> ArgTys =
-          buildIntrinsicArgTypes(CI, ID, VecTy->getNumElements(),
-                                 It != MinBWs.end() ? It->second.first : 0);
+      SmallVector<Type *> ArgTys = buildIntrinsicArgTypes(
+          CI, ID, VL.size(), It != MinBWs.end() ? It->second.first : 0);
       auto VecCallCosts = getVectorCallCosts(CI, VecTy, TTI, TLI, ArgTys);
       return std::min(VecCallCosts.first, VecCallCosts.second) + CommonCost;
     };
@@ -13884,9 +13884,8 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E, bool PostponedPHIs) {
 
       Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
 
-      SmallVector<Type *> ArgTys =
-          buildIntrinsicArgTypes(CI, ID, VecTy->getNumElements(),
-                                 It != MinBWs.end() ? It->second.first : 0);
+      SmallVector<Type *> ArgTys = buildIntrinsicArgTypes(
+          CI, ID, E->Scalars.size(), It != MinBWs.end() ? It->second.first : 0);
       auto VecCallCosts = getVectorCallCosts(CI, VecTy, TTI, TLI, ArgTys);
       bool UseIntrinsic = ID != Intrinsic::not_intrinsic &&
                           VecCallCosts.first <= VecCallCosts.second;
@@ -15903,8 +15902,11 @@ bool BoUpSLP::collectValuesToDemote(
     auto Checker = [&](unsigned BitWidth, unsigned) {
       unsigned MinBW = PowerOf2Ceil(BitWidth);
       SmallVector<Type *> ArgTys = buildIntrinsicArgTypes(IC, ID, VF, MinBW);
+      unsigned NumElements = getNumElements(E.Scalars.front()->getType());
       auto VecCallCosts = getVectorCallCosts(
-          IC, getWidenedType(IntegerType::get(IC->getContext(), MinBW), VF),
+          IC,
+          getWidenedType(IntegerType::get(IC->getContext(), MinBW),
+                         VF * NumElements),
           TTI, TLI, ArgTys);
       InstructionCost Cost = std::min(VecCallCosts.first, VecCallCosts.second);
       if (Cost < BestCost) {
