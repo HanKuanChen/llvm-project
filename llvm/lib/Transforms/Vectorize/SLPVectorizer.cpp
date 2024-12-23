@@ -3566,9 +3566,7 @@ private:
     bool isAltShuffle() const { return MainOp != AltOp; }
 
     bool isOpcodeOrAlt(Instruction *I) const {
-      unsigned CheckedOpcode = I->getOpcode();
-      return (getOpcode() == CheckedOpcode ||
-              getAltOpcode() == CheckedOpcode);
+      return getInterchangeableInstruction(I, MainOp, AltOp).has_value();
     }
 
     /// Chooses the correct key for scheduling data. If \p Op has the same (or
