@@ -948,7 +948,7 @@ getInterchangeableInstruction(Instruction *I) {
 }
 
 /// \returns the Op and operands which \p I convert to.
-static std::pair<Value *, SmallVector<Value *>>
+static std::optional<std::pair<Value *, SmallVector<Value *>>>
 getInterchangeableInstruction(Instruction *I, Instruction *MainOp,
                               Instruction *AltOp) {
   SmallVector<InterchangeableInstruction> IIList =
@@ -956,15 +956,14 @@ getInterchangeableInstruction(Instruction *I, Instruction *MainOp,
   const auto *Iter = find_if(IIList, [&](const InterchangeableInstruction &II) {
     return II.Opcode == MainOp->getOpcode();
   });
-  if (Iter == IIList.end()) {
-    Iter = find_if(IIList, [&](const InterchangeableInstruction &II) {
-      return II.Opcode == AltOp->getOpcode();
-    });
-    assert(Iter != IIList.end() &&
-           "Cannot find an interchangeable instruction.");
+  if (Iter != IIList.end())
+    return std::make_pair(MainOp, Iter->Ops);
+  Iter = find_if(IIList, [&](const InterchangeableInstruction &II) {
+    return II.Opcode == AltOp->getOpcode();
+  });
+  if (Iter != IIList.end())
     return std::make_pair(AltOp, Iter->Ops);
-  }
-  return std::make_pair(MainOp, Iter->Ops);
+  return std::nullopt;
 }
 
 /// \returns true if \p Opcode is allowed as part of the main/alternate
@@ -2607,8 +2606,11 @@ public:
                 false};
           continue;
         }
-        auto [SelectedOp, Ops] =
-            getInterchangeableInstruction(cast<Instruction>(V), MainOp, AltOp);
+        std::optional<std::pair<Value *, SmallVector<Value *>>>
+            InterchangeableInstruction = getInterchangeableInstruction(
+                cast<Instruction>(V), MainOp, AltOp);
+        assert(InterchangeableInstruction.has_value() &&
+               "Cannot find an interchangeable instruction.");
         // Our tree has just 3 nodes: the root and two operands.
         // It is therefore trivial to get the APO. We only need to check the
         // opcode of V and whether the operand at OpIdx is the LHS or RHS
@@ -2619,10 +2621,12 @@ public:
         // Since operand reordering is performed on groups of commutative
         // operations or alternating sequences (e.g., +, -), we can safely
         // tell the inverse operations by checking commutativity.
-        bool IsInverseOperation = !isCommutative(cast<Instruction>(SelectedOp));
+        bool IsInverseOperation = !isCommutative(
+            cast<Instruction>(InterchangeableInstruction->first));
         for (unsigned OpIdx : seq<unsigned>(NumOperands)) {
           bool APO = (OpIdx == 0) ? false : IsInverseOperation;
-          OpsVec[OpIdx][Lane] = {Ops[OpIdx], APO, false};
+          OpsVec[OpIdx][Lane] = {InterchangeableInstruction->second[OpIdx], APO,
+                                 false};
         }
       }
     }
