@@ -2,6 +2,13 @@
 ; RUN: opt -passes=slp-vectorizer -S %s | FileCheck %s
 
 define i32 @test() {
+; CHECK-LABEL: @test(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[MUL:%.*]] = mul i32 1, 0
+; CHECK-NEXT:    [[SHL:%.*]] = shl i32 [[MUL]], 0
+; CHECK-NEXT:    [[XOR1:%.*]] = xor i32 [[SHL]], [[MUL]]
+; CHECK-NEXT:    ret i32 [[XOR1]]
+;
 entry:
   %mul = mul i32 1, 0
   %shl = shl i32 %mul, 0
