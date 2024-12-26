@@ -893,9 +893,6 @@ getInterchangeableInstruction(Instruction *I) {
   }
   if (!V)
     return {InterchangeableInstruction(Opcode, I->operands())};
-  // PII = Possible Interchangeable Instruction
-  SmallVector<InterchangeableInstruction> PII;
-  PII.emplace_back(Opcode, I->operands());
   Value *Op0 = I->getOperand(0);
   Type *Op1Ty = I->getOperand(1)->getType();
   const APInt &Op1Int = V->getValue();
@@ -903,47 +900,66 @@ getInterchangeableInstruction(Instruction *I) {
       ConstantInt::get(Op1Ty, APInt::getZero(Op1Int.getBitWidth()));
   Constant *UnsignedMax =
       ConstantInt::get(Op1Ty, APInt::getMaxValue(Op1Int.getBitWidth()));
+  // PII = Possible Interchangeable Instruction
+  SmallVector<InterchangeableInstruction> PII;
   switch (Opcode) {
   case Instruction::Shl: {
-    PII.emplace_back(Instruction::Mul, Op0,
-                     ConstantInt::get(Op1Ty, 1 << Op1Int.getZExtValue()));
     if (Op1Int.isZero()) {
-      PII.emplace_back(Instruction::Sub, Op0, Zero);
       PII.emplace_back(Instruction::Add, Op0, Zero);
+      PII.emplace_back(Instruction::Sub, Op0, Zero);
+      PII.emplace_back(Instruction::Mul, Op0,
+                       ConstantInt::get(Op1Ty, 1 << Op1Int.getZExtValue()));
+      PII.emplace_back(Instruction::Shl, I->operands());
       PII.emplace_back(Instruction::And, Op0, UnsignedMax);
       PII.emplace_back(Instruction::Or, Op0, Zero);
+    } else {
+      PII.emplace_back(Instruction::Mul, Op0,
+                       ConstantInt::get(Op1Ty, 1 << Op1Int.getZExtValue()));
+      PII.emplace_back(Instruction::Shl, I->operands());
     }
     break;
   }
   case Instruction::Mul: {
     if (Op1Int.isOne()) {
-      PII.emplace_back(Instruction::Sub, Op0, Zero);
       PII.emplace_back(Instruction::Add, Op0, Zero);
+      PII.emplace_back(Instruction::Sub, Op0, Zero);
+      PII.emplace_back(Instruction::Mul, I->operands());
       PII.emplace_back(Instruction::And, Op0, UnsignedMax);
       PII.emplace_back(Instruction::Or, Op0, Zero);
     } else if (Op1Int.isZero()) {
+      PII.emplace_back(Instruction::Mul, I->operands());
       PII.emplace_back(Instruction::And, Op0, Zero);
     } else if (Op1Int.isAllOnes()) {
       PII.emplace_back(Instruction::Sub, Zero, Op0);
+      PII.emplace_back(Instruction::Mul, I->operands());
+    } else {
+      PII.emplace_back(Instruction::Mul, I->operands());
     }
     break;
   }
   case Instruction::Sub:
     if (Op1Int.isZero()) {
       PII.emplace_back(Instruction::Add, Op0, Zero);
+      PII.emplace_back(Instruction::Sub, I->operands());
       PII.emplace_back(Instruction::And, Op0, UnsignedMax);
       PII.emplace_back(Instruction::Or, Op0, Zero);
+    } else {
+      PII.emplace_back(Instruction::Sub, I->operands());
     }
     break;
   case Instruction::Add:
     if (Op1Int.isZero()) {
+      PII.emplace_back(Instruction::Add, I->operands());
       PII.emplace_back(Instruction::And, Op0, UnsignedMax);
       PII.emplace_back(Instruction::Or, Op0, Zero);
+    } else {
+      PII.emplace_back(Instruction::Add, I->operands());
     }
     break;
   }
   // std::set_intersection requires a sorted range.
-  sort(PII);
+  assert(std::is_sorted(PII.begin(), PII.end()) &&
+         "Please sort Instruction by opcode.");
   return PII;
 }
 
