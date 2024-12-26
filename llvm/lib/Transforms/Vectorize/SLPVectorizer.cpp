@@ -8538,8 +8538,12 @@ void BoUpSLP::buildTree_rec(ArrayRef<Value *> VL, unsigned Depth,
 
   BlockScheduling &BS = *BSRef;
 
+  SmallVector<Value *> MainOpIsTheFirst(UniqueValues);
+  std::stable_partition(MainOpIsTheFirst.begin(), MainOpIsTheFirst.end(),
+                        [&](Value *V) { return V == S.getMainOp(); });
+
   std::optional<ScheduleData *> Bundle =
-      BS.tryScheduleBundle(UniqueValues, this, S);
+      BS.tryScheduleBundle(MainOpIsTheFirst, this, S);
 #ifdef EXPENSIVE_CHECKS
   // Make sure we didn't break any internal invariants
   BS.verify();
@@ -17254,6 +17258,7 @@ BoUpSLP::BlockScheduling::buildBundle(ArrayRef<Value *> VL) {
 std::optional<BoUpSLP::ScheduleData *>
 BoUpSLP::BlockScheduling::tryScheduleBundle(ArrayRef<Value *> VL, BoUpSLP *SLP,
                                             const InstructionsState &S) {
+  assert(VL[0] == S.getMainOp() && "MainOp must be the first element of VL.");
   // No need to schedule PHIs, insertelement, extractelement and extractvalue
   // instructions.
   if (isa<PHINode>(S.getMainOp()) ||
