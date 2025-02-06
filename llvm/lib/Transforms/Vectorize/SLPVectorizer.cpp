@@ -903,35 +903,100 @@ static bool isCmpSameOrSwapped(const CmpInst *BaseCI, const CmpInst *CI,
           areCompatibleCmpOps(BaseOp0, BaseOp1, Op1, Op0, TLI));
 }
 
-/// \returns analysis of the Instructions in \p VL described in
-/// InstructionsState, the Opcode that we suppose the whole list
-/// could be vectorized even if its structure is diverse.
-static InstructionsState getSameOpcode(ArrayRef<Value *> VL,
-                                       const TargetLibraryInfo &TLI) {
-  // Make sure these are all Instructions.
-  if (!all_of(VL, IsaPred<Instruction, PoisonValue>))
-    return InstructionsState::invalid();
+namespace {
+class IsSameOpcode {
+protected:
+  ArrayRef<Value *> VL;
+  const TargetLibraryInfo &TLI;
+  Instruction *MainOp;
+  bool HasPoison;
 
-  auto *It = find_if(VL, IsaPred<Instruction>);
-  if (It == VL.end())
-    return InstructionsState::invalid();
+public:
+  IsSameOpcode(ArrayRef<Value *> VL, const TargetLibraryInfo &TLI,
+               Instruction *MainOp)
+      : VL(VL), TLI(TLI), MainOp(MainOp),
+        HasPoison(any_of(VL, IsaPred<PoisonValue>)) {}
+  virtual bool isValidMainOp() const { return true; }
+  virtual bool isSameOpcode(Value *V) {
+    return MainOp->getOpcode() == cast<Instruction>(V)->getOpcode();
+  }
+  virtual InstructionsState getInstructionsState() const {
+    return InstructionsState(MainOp, MainOp);
+  }
+  virtual ~IsSameOpcode() = default;
+};
 
-  Instruction *MainOp = cast<Instruction>(*It);
-  unsigned InstCnt = std::count_if(It, VL.end(), IsaPred<Instruction>);
-  if ((VL.size() > 2 && !isa<PHINode>(MainOp) && InstCnt < VL.size() / 2) ||
-      (VL.size() == 2 && InstCnt < 2))
-    return InstructionsState::invalid();
+class IsSameAlternateOpcode : public IsSameOpcode {
+protected:
+  Instruction *AltOp;
+  unsigned Opcode;
+  unsigned AltOpcode;
 
-  bool IsCastOp = isa<CastInst>(MainOp);
-  bool IsBinOp = isa<BinaryOperator>(MainOp);
-  bool IsCmpOp = isa<CmpInst>(MainOp);
-  CmpInst::Predicate BasePred = IsCmpOp ? cast<CmpInst>(MainOp)->getPredicate()
-                                        : CmpInst::BAD_ICMP_PREDICATE;
-  Instruction *AltOp = MainOp;
-  unsigned Opcode = MainOp->getOpcode();
-  unsigned AltOpcode = Opcode;
+public:
+  IsSameAlternateOpcode(ArrayRef<Value *> VL, const TargetLibraryInfo &TLI,
+                        Instruction *MainOp)
+      : IsSameOpcode(VL, TLI, MainOp), AltOp(MainOp),
+        Opcode(MainOp->getOpcode()), AltOpcode(MainOp->getOpcode()) {}
+  InstructionsState getInstructionsState() const override {
+    return InstructionsState(MainOp, AltOp);
+  }
+};
 
-  bool SwappedPredsCompatible = IsCmpOp && [&]() {
+class IsSameBinaryOperator final : public IsSameAlternateOpcode {
+public:
+  using IsSameAlternateOpcode::IsSameAlternateOpcode;
+  bool isSameOpcode(Value *V) override {
+    auto *BO = dyn_cast<BinaryOperator>(V);
+    if (!BO)
+      return false;
+    // Cannot combine poison and divisions.
+    if (HasPoison && (BO->isIntDivRem() || BO->isFPDivRem()))
+      return false;
+    unsigned InstOpcode = BO->getOpcode();
+    if (InstOpcode == Opcode || InstOpcode == AltOpcode)
+      return true;
+    if (Opcode == AltOpcode && isValidForAlternation(InstOpcode) &&
+        isValidForAlternation(Opcode)) {
+      AltOpcode = InstOpcode;
+      AltOp = BO;
+      return true;
+    }
+    return false;
+  }
+};
+
+class IsSameCastInst final : public IsSameAlternateOpcode {
+public:
+  using IsSameAlternateOpcode::IsSameAlternateOpcode;
+  bool isSameOpcode(Value *V) override {
+    if (!isa<CastInst>(V))
+      return false;
+    Instruction *I = cast<Instruction>(V);
+    unsigned InstOpcode = I->getOpcode();
+    Value *Op0 = MainOp->getOperand(0);
+    Type *Ty0 = Op0->getType();
+    Value *Op1 = I->getOperand(0);
+    Type *Ty1 = Op1->getType();
+    if (Ty0 == Ty1) {
+      if (InstOpcode == Opcode || InstOpcode == AltOpcode)
+        return true;
+      if (Opcode == AltOpcode) {
+        assert(isValidForAlternation(Opcode) &&
+               isValidForAlternation(InstOpcode) &&
+               "Cast isn't safe for alternation, logic needs to be updated!");
+        AltOpcode = InstOpcode;
+        AltOp = I;
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
+class IsSameCmpInst final : public IsSameAlternateOpcode {
+  CmpInst::Predicate BasePred;
+  bool SwappedPredsCompatible;
+  bool isSwappedPredsCompatible() {
     SetVector<unsigned> UniquePreds, UniqueNonSwappedPreds;
     UniquePreds.insert(BasePred);
     UniqueNonSwappedPreds.insert(BasePred);
@@ -951,141 +1016,186 @@ static InstructionsState getSameOpcode(ArrayRef<Value *> VL,
     // compatible only 2, consider swappable predicates as compatible opcodes,
     // not alternate.
     return UniqueNonSwappedPreds.size() > 2 && UniquePreds.size() == 2;
-  }();
-  // Check for one alternate opcode from another BinaryOperator.
-  // TODO - generalize to support all operators (types, calls etc.).
-  Intrinsic::ID BaseID = 0;
-  SmallVector<VFInfo> BaseMappings;
-  if (auto *CallBase = dyn_cast<CallInst>(MainOp)) {
-    BaseID = getVectorIntrinsicIDForCall(CallBase, &TLI);
-    BaseMappings = VFDatabase(*CallBase).getMappings(*CallBase);
-    if (!isTriviallyVectorizable(BaseID) && BaseMappings.empty())
-      return InstructionsState::invalid();
   }
-  bool AnyPoison = InstCnt != VL.size();
-  // Check MainOp too to be sure that it matches the requirements for the
-  // instructions.
-  for (Value *V : iterator_range(It, VL.end())) {
-    auto *I = dyn_cast<Instruction>(V);
-    if (!I)
-      continue;
 
-    // Cannot combine poison and divisions.
+public:
+  IsSameCmpInst(ArrayRef<Value *> VL, const TargetLibraryInfo &TLI,
+                Instruction *MainOp)
+      : IsSameAlternateOpcode(VL, TLI, MainOp),
+        BasePred(cast<CmpInst>(MainOp)->getPredicate()),
+        SwappedPredsCompatible(isSwappedPredsCompatible()) {}
+  bool isSameOpcode(Value *V) override {
+    auto *Inst = dyn_cast<CmpInst>(V);
+    if (!Inst)
+      return false;
+    unsigned InstOpcode = Inst->getOpcode();
+    auto *BaseInst = cast<CmpInst>(MainOp);
+    Type *Ty0 = BaseInst->getOperand(0)->getType();
+    Type *Ty1 = Inst->getOperand(0)->getType();
+    if (Ty0 == Ty1) {
+      assert(InstOpcode == Opcode && "Expected same CmpInst opcode.");
+      assert(InstOpcode == AltOpcode &&
+             "Alternate instructions are only supported by BinaryOperator "
+             "and CastInst.");
+      // Check for compatible operands. If the corresponding operands are not
+      // compatible - need to perform alternate vectorization.
+      CmpInst::Predicate CurrentPred = Inst->getPredicate();
+      CmpInst::Predicate SwappedCurrentPred =
+          CmpInst::getSwappedPredicate(CurrentPred);
+
+      if ((VL.size() == 2 || SwappedPredsCompatible) &&
+          (BasePred == CurrentPred || BasePred == SwappedCurrentPred))
+        return true;
+
+      if (isCmpSameOrSwapped(BaseInst, Inst, TLI))
+        return true;
+      auto *AltInst = cast<CmpInst>(AltOp);
+      if (MainOp != AltOp) {
+        if (isCmpSameOrSwapped(AltInst, Inst, TLI))
+          return true;
+      } else if (BasePred != CurrentPred) {
+        assert(
+            isValidForAlternation(InstOpcode) &&
+            "CmpInst isn't safe for alternation, logic needs to be updated!");
+        AltOp = Inst;
+        return true;
+      }
+      CmpInst::Predicate AltPred = AltInst->getPredicate();
+      if (BasePred == CurrentPred || BasePred == SwappedCurrentPred ||
+          AltPred == CurrentPred || AltPred == SwappedCurrentPred)
+        return true;
+    }
+    return false;
+  }
+};
+
+class IsSameGetElementPtrInst final : public IsSameOpcode {
+public:
+  using IsSameOpcode::IsSameOpcode;
+  bool isSameOpcode(Value *V) override {
+    auto *GEP = dyn_cast<GetElementPtrInst>(V);
+    return GEP && GEP->getNumOperands() == 2 &&
+           GEP->getOperand(0)->getType() == MainOp->getOperand(0)->getType();
+  }
+};
+
+class IsSameExtractElementInst final : public IsSameOpcode {
+public:
+  using IsSameOpcode::IsSameOpcode;
+  bool isSameOpcode(Value *V) override {
+    auto *EI = dyn_cast<ExtractElementInst>(V);
+    return EI && isVectorLikeInstWithConstOps(EI);
+  }
+};
+
+class IsSameLoadInst final : public IsSameOpcode {
+public:
+  using IsSameOpcode::IsSameOpcode;
+  bool isValidMainOp() const override {
+    return cast<LoadInst>(MainOp)->isSimple();
+  }
+  bool isSameOpcode(Value *V) override {
+    auto *LI = dyn_cast<LoadInst>(V);
+    return LI && LI->isSimple();
+  }
+};
+
+class IsSameCallInst final : public IsSameOpcode {
+  Intrinsic::ID BaseID;
+  SmallVector<VFInfo> BaseMappings;
+
+public:
+  IsSameCallInst(ArrayRef<Value *> VL, const TargetLibraryInfo &TLI,
+                 Instruction *MainOp)
+      : IsSameOpcode(VL, TLI, MainOp),
+        BaseID(getVectorIntrinsicIDForCall(cast<CallInst>(MainOp), &TLI)),
+        BaseMappings(VFDatabase(*cast<CallInst>(MainOp))
+                         .getMappings(*cast<CallInst>(MainOp))) {}
+  bool isValidMainOp() const override {
     // TODO: do some smart analysis of the CallInsts to exclude divide-like
     // intrinsics/functions only.
-    if (AnyPoison && (I->isIntDivRem() || I->isFPDivRem() || isa<CallInst>(I)))
-      return InstructionsState::invalid();
-    unsigned InstOpcode = I->getOpcode();
-    if (IsBinOp && isa<BinaryOperator>(I)) {
-      if (InstOpcode == Opcode || InstOpcode == AltOpcode)
-        continue;
-      if (Opcode == AltOpcode && isValidForAlternation(InstOpcode) &&
-          isValidForAlternation(Opcode)) {
-        AltOpcode = InstOpcode;
-        AltOp = I;
-        continue;
-      }
-    } else if (IsCastOp && isa<CastInst>(I)) {
-      Value *Op0 = MainOp->getOperand(0);
-      Type *Ty0 = Op0->getType();
-      Value *Op1 = I->getOperand(0);
-      Type *Ty1 = Op1->getType();
-      if (Ty0 == Ty1) {
-        if (InstOpcode == Opcode || InstOpcode == AltOpcode)
-          continue;
-        if (Opcode == AltOpcode) {
-          assert(isValidForAlternation(Opcode) &&
-                 isValidForAlternation(InstOpcode) &&
-                 "Cast isn't safe for alternation, logic needs to be updated!");
-          AltOpcode = InstOpcode;
-          AltOp = I;
-          continue;
-        }
-      }
-    } else if (auto *Inst = dyn_cast<CmpInst>(I); Inst && IsCmpOp) {
-      auto *BaseInst = cast<CmpInst>(MainOp);
-      Type *Ty0 = BaseInst->getOperand(0)->getType();
-      Type *Ty1 = Inst->getOperand(0)->getType();
-      if (Ty0 == Ty1) {
-        assert(InstOpcode == Opcode && "Expected same CmpInst opcode.");
-        assert(InstOpcode == AltOpcode &&
-               "Alternate instructions are only supported by BinaryOperator "
-               "and CastInst.");
-        // Check for compatible operands. If the corresponding operands are not
-        // compatible - need to perform alternate vectorization.
-        CmpInst::Predicate CurrentPred = Inst->getPredicate();
-        CmpInst::Predicate SwappedCurrentPred =
-            CmpInst::getSwappedPredicate(CurrentPred);
-
-        if ((VL.size() == 2 || SwappedPredsCompatible) &&
-            (BasePred == CurrentPred || BasePred == SwappedCurrentPred))
-          continue;
-
-        if (isCmpSameOrSwapped(BaseInst, Inst, TLI))
-          continue;
-        auto *AltInst = cast<CmpInst>(AltOp);
-        if (MainOp != AltOp) {
-          if (isCmpSameOrSwapped(AltInst, Inst, TLI))
-            continue;
-        } else if (BasePred != CurrentPred) {
-          assert(
-              isValidForAlternation(InstOpcode) &&
-              "CmpInst isn't safe for alternation, logic needs to be updated!");
-          AltOp = I;
-          continue;
-        }
-        CmpInst::Predicate AltPred = AltInst->getPredicate();
-        if (BasePred == CurrentPred || BasePred == SwappedCurrentPred ||
-            AltPred == CurrentPred || AltPred == SwappedCurrentPred)
-          continue;
-      }
-    } else if (InstOpcode == Opcode) {
-      assert(InstOpcode == AltOpcode &&
-             "Alternate instructions are only supported by BinaryOperator and "
-             "CastInst.");
-      if (auto *Gep = dyn_cast<GetElementPtrInst>(I)) {
-        if (Gep->getNumOperands() != 2 ||
-            Gep->getOperand(0)->getType() != MainOp->getOperand(0)->getType())
-          return InstructionsState::invalid();
-      } else if (auto *EI = dyn_cast<ExtractElementInst>(I)) {
-        if (!isVectorLikeInstWithConstOps(EI))
-          return InstructionsState::invalid();
-      } else if (auto *LI = dyn_cast<LoadInst>(I)) {
-        auto *BaseLI = cast<LoadInst>(MainOp);
-        if (!LI->isSimple() || !BaseLI->isSimple())
-          return InstructionsState::invalid();
-      } else if (auto *Call = dyn_cast<CallInst>(I)) {
-        auto *CallBase = cast<CallInst>(MainOp);
-        if (Call->getCalledFunction() != CallBase->getCalledFunction())
-          return InstructionsState::invalid();
-        if (Call->hasOperandBundles() &&
-            (!CallBase->hasOperandBundles() ||
-             !std::equal(Call->op_begin() + Call->getBundleOperandsStartIndex(),
-                         Call->op_begin() + Call->getBundleOperandsEndIndex(),
-                         CallBase->op_begin() +
-                             CallBase->getBundleOperandsStartIndex())))
-          return InstructionsState::invalid();
-        Intrinsic::ID ID = getVectorIntrinsicIDForCall(Call, &TLI);
-        if (ID != BaseID)
-          return InstructionsState::invalid();
-        if (!ID) {
-          SmallVector<VFInfo> Mappings = VFDatabase(*Call).getMappings(*Call);
-          if (Mappings.size() != BaseMappings.size() ||
-              Mappings.front().ISA != BaseMappings.front().ISA ||
-              Mappings.front().ScalarName != BaseMappings.front().ScalarName ||
-              Mappings.front().VectorName != BaseMappings.front().VectorName ||
-              Mappings.front().Shape.VF != BaseMappings.front().Shape.VF ||
-              Mappings.front().Shape.Parameters !=
-                  BaseMappings.front().Shape.Parameters)
-            return InstructionsState::invalid();
-        }
-      }
-      continue;
-    }
-    return InstructionsState::invalid();
+    if (HasPoison)
+      return false;
+    return isTriviallyVectorizable(BaseID) || !BaseMappings.empty();
   }
+  bool isSameOpcode(Value *V) override {
+    auto *Call = dyn_cast<CallInst>(V);
+    if (!Call)
+      return false;
+    auto *CallBase = cast<CallInst>(MainOp);
+    if (Call->getCalledFunction() != CallBase->getCalledFunction())
+      return false;
+    if (Call->hasOperandBundles() &&
+        (!CallBase->hasOperandBundles() ||
+         !std::equal(Call->op_begin() + Call->getBundleOperandsStartIndex(),
+                     Call->op_begin() + Call->getBundleOperandsEndIndex(),
+                     CallBase->op_begin() +
+                         CallBase->getBundleOperandsStartIndex())))
+      return false;
+    Intrinsic::ID ID = getVectorIntrinsicIDForCall(Call, &TLI);
+    if (ID != BaseID)
+      return false;
+    if (!ID) {
+      SmallVector<VFInfo> Mappings = VFDatabase(*Call).getMappings(*Call);
+      if (Mappings.size() != BaseMappings.size() ||
+          Mappings.front().ISA != BaseMappings.front().ISA ||
+          Mappings.front().ScalarName != BaseMappings.front().ScalarName ||
+          Mappings.front().VectorName != BaseMappings.front().VectorName ||
+          Mappings.front().Shape.VF != BaseMappings.front().Shape.VF ||
+          Mappings.front().Shape.Parameters !=
+              BaseMappings.front().Shape.Parameters)
+        return false;
+    }
+    return true;
+  }
+};
+} // namespace
 
-  return InstructionsState(MainOp, AltOp);
+/// \returns analysis of the Instructions in \p VL described in
+/// InstructionsState, the Opcode that we suppose the whole list
+/// could be vectorized even if its structure is diverse.
+static InstructionsState getSameOpcode(ArrayRef<Value *> VL,
+                                       const TargetLibraryInfo &TLI) {
+  // Make sure these are all Instructions.
+  if (!all_of(VL, IsaPred<Instruction, PoisonValue>))
+    return InstructionsState::invalid();
+
+  auto *It = find_if(VL, IsaPred<Instruction>);
+  if (It == VL.end())
+    return InstructionsState::invalid();
+
+  Instruction *MainOp = cast<Instruction>(*It);
+  unsigned InstCnt = std::count_if(It, VL.end(), IsaPred<Instruction>);
+  if ((VL.size() > 2 && !isa<PHINode>(MainOp) && InstCnt < VL.size() / 2) ||
+      (VL.size() == 2 && InstCnt < 2))
+    return InstructionsState::invalid();
+
+  std::unique_ptr<IsSameOpcode> IsSameChecker;
+  if (isa<BinaryOperator>(MainOp))
+    IsSameChecker = std::make_unique<IsSameBinaryOperator>(VL, TLI, MainOp);
+  else if (isa<CastInst>(MainOp))
+    IsSameChecker = std::make_unique<IsSameCastInst>(VL, TLI, MainOp);
+  else if (isa<CmpInst>(MainOp))
+    IsSameChecker = std::make_unique<IsSameCmpInst>(VL, TLI, MainOp);
+  else if (isa<GetElementPtrInst>(MainOp))
+    IsSameChecker = std::make_unique<IsSameGetElementPtrInst>(VL, TLI, MainOp);
+  else if (isa<ExtractElementInst>(MainOp))
+    IsSameChecker = std::make_unique<IsSameExtractElementInst>(VL, TLI, MainOp);
+  else if (isa<LoadInst>(MainOp))
+    IsSameChecker = std::make_unique<IsSameLoadInst>(VL, TLI, MainOp);
+  else if (isa<CallInst>(MainOp))
+    IsSameChecker = std::make_unique<IsSameCallInst>(VL, TLI, MainOp);
+  else
+    IsSameChecker = std::make_unique<IsSameOpcode>(VL, TLI, MainOp);
+  if (!IsSameChecker->isValidMainOp())
+    return InstructionsState::invalid();
+  for (Value *V : iterator_range(It, VL.end())) {
+    if (isa<PoisonValue>(V))
+      continue;
+    if (!IsSameChecker->isSameOpcode(V))
+      return InstructionsState::invalid();
+  }
+  return IsSameChecker->getInstructionsState();
 }
 
 /// \returns true if all of the values in \p VL have the same type or false
