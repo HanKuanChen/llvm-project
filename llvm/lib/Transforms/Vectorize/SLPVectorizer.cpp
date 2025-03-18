@@ -119,7 +119,7 @@ static cl::opt<bool>
                         cl::desc("Run the SLP vectorization passes"));
 
 static cl::opt<bool>
-    SLPReVec("slp-revec", cl::init(false), cl::Hidden,
+    SLPReVec("slp-revec", cl::init(true), cl::Hidden,
              cl::desc("Enable vectorization for wider vector utilization"));
 
 static cl::opt<int>
